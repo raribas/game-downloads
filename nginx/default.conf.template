@@ -1,0 +1,68 @@
+# Rendered by the nginx image entrypoint (envsubst replaces only ${UPLOAD_TOKEN}).
+map_hash_bucket_size 256;
+map $http_x_upload_token $token_ok {
+  default 0;
+  "${UPLOAD_TOKEN}" 1;
+}
+map $request_method $is_write {
+  default 0;
+  PUT 1;
+  DELETE 1;
+  MKCOL 1;
+}
+map "$is_write$token_ok" $write_denied {
+  default 0;
+  "10" 1;
+}
+# versioned release files are immutable, everything else (stable names, *.json) is revalidated
+map $uri $cache_ctl {
+  default "no-cache";
+  "~^/MergeDefense-[^/]+\.(ipa|apk|pck)$" "public, max-age=31536000, immutable";
+}
+map $uri $disp {
+  default "";
+  "~\.(ipa|apk|pck)$" "attachment";
+}
+
+server {
+  listen 80;
+  server_name _;
+  server_tokens off;
+  root /data/files;
+  autoindex off;
+  gzip off;
+  default_type application/octet-stream;
+  client_max_body_size 500m;
+  client_body_temp_path /data/files/.tmp;
+
+  types {
+    application/json json;
+    text/plain txt;
+    application/octet-stream ipa apk pck;
+  }
+
+  if ($request_method !~ ^(GET|HEAD|OPTIONS|PUT|DELETE|MKCOL)$) { return 405; }
+  if ($write_denied) { return 403; }
+
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  location = /robots.txt {
+    root /usr/share/nginx/html;
+    default_type text/plain;
+    include /etc/nginx/security.conf;
+  }
+
+  # never serve or write dotfiles (.tmp, .git, ...)
+  location ~ /\. { return 404; }
+
+  location / {
+    dav_methods PUT DELETE MKCOL;
+    create_full_put_path on;
+    dav_access user:rw group:r all:r;
+    include /etc/nginx/security.conf;
+  }
+}
